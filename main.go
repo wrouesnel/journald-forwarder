@@ -12,12 +12,12 @@ import (
 	"github.com/wrouesnel/go.log"
 	"github.com/coreos/go-systemd/sdjournal"
 	"os"
-	"io/ioutil"
 	"time"
 	"encoding/binary"
 	"net/url"
 	"net"
-"encoding/json"
+	"encoding/json"
+	"os/signal"
 )
 
 const (
@@ -34,12 +34,9 @@ var (
 	networkRetry = flag.Duration("network-retry", time.Second, "Time between attempting reconnects to a network endpoint. Default 1 second.")
 )
 
-var (
-	lastTimestamp uint64
-)
-
 func main() {
 	var err error
+	var lastTimestamp uint64
 	flag.Parse()
 
 	// Parse the remote in advance.
@@ -100,9 +97,14 @@ func main() {
 		// Continue seeking otherwise.
 	}
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	checkticker := time.Tick(*checkpointInterval)
+
 	// Forward messages
 	var conn net.Conn
-	for {
+	MainLoop: for {
 		// Loop endlessly to try and reconnect
 		for {
 			conn, err = net.Dial(proto, host)
@@ -110,7 +112,12 @@ func main() {
 				break
 			}
 			log.Errorln("Failed to connect to remote host, retrying. Error: ", err)
-			time.Sleep(*networkRetry)
+			sleepCh := time.After(*networkRetry)
+			select {
+			case _ = <- sigCh:
+				break MainLoop
+			case _ = <- sleepCh:
+			}
 		}
 
 		// Connected, start sending entries.
@@ -126,6 +133,58 @@ func main() {
 				log.Infoln("Connection error, reconnecting:", err)
 				break	// Loop back to reconnect
 			}
+			lastTimestamp, err = j.GetRealtimeUsec()
+			if err != nil {
+				log.Errorln("Error getting the timestamp of the sent entry")
+			}
+
+			r, err := j.Next()
+			if err != nil {
+				// we could try re-opening and doing log recovery in the future
+				log.Fatalln("Error while reading next journal entry. Exiting:", err)
+			}
+
+			if r == 0 {
+				// We're at the end of the journal, so wait until a new entry
+				// before continuing to loop.
+				wait := make(chan interface{})
+				go func(wait chan<- interface{}) {
+					j.Wait(0)
+					close(wait)
+				}(wait)
+
+				JournalWait: for {
+					select {
+					case _ = <-sigCh:
+						break MainLoop
+					case _ = <-checkticker:
+						// Checkpoint the state file
+						log.Debugln("Checkpointing at:", lastTimestamp)
+						WriteStateFile(*stateFile, lastTimestamp)
+					case _ = <-wait:
+						break JournalWait
+					}
+				}
+			}
 		}
+	}
+
+	log.Infoln("Writing checkpoint before graceful exit")
+	WriteStateFile(*stateFile, lastTimestamp)
+
+	log.Infoln("Exiting normally.")
+	os.Exit(0)
+}
+
+func WriteStateFile(stateFile string, lastTimestamp uint64) {
+	fd, err := os.OpenFile(stateFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(0777))
+	defer fd.Close()	// We don't checkpoint often, and want to force sync.
+	if err == nil {
+		err = binary.Write(fd, binary.LittleEndian, &lastTimestamp)
+		if err != nil {
+			log.Errorln("Error writing state file:", err)
+		}
+	} else {
+		log.Errorln("Error writing state file:", err)
 	}
 }
