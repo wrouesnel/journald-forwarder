@@ -1,2 +1,5 @@
 journald-forwarder
+journald-forwarder.state
 .idea
+glide.lock
+

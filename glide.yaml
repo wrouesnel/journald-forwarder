@@ -1,0 +1,9 @@
+package: github.com/wrouesnel/journald-forwarder
+flatten: true
+import:
+- package: github.com/coreos/go-systemd
+  subpackages:
+  - sdjournal
+  ref: 9590e2380f142e7d49952483a31dfdf089ae16ab
+  repo: https://github.com/wrouesnel/go-systemd.git
+- package: github.com/wrouesnel/go.log
