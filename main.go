@@ -128,11 +128,14 @@ func main() {
 				log.Fatalln("Error encoding JSON (BUG):", err)
 			}
 
+            b = append(b, byte('\n'))
+
 			_, err = conn.Write(b)
 			if err != nil {
 				log.Infoln("Connection error, reconnecting:", err)
 				break	// Loop back to reconnect
 			}
+			
 			lastTimestamp, err = j.GetRealtimeUsec()
 			if err != nil {
 				log.Errorln("Error getting the timestamp of the sent entry")
